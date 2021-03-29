@@ -1,0 +1,464 @@
+Let's start by loading the dataset and get a feel for its size and the class of each variable:
+
+```{r prepare-data-1, echo=FALSE, warning=FALSE, results='asis'}
+initial_df = read_csv("data.csv", col_types = cols())
+initial_df$CustomerID = as.character(initial_df$CustomerID)
+kable(initial_df[1:5, ], caption = "A glimpse of the dataset") %>% kable_styling()
+```
+
+The shape of the dataframe is: `r dim(initial_df)`
+
+```{r prepare-data-1.1, echo=FALSE, warning=FALSE}
+options(repr.plot.width=8, repr.plot.height=3)
+# look for missing values using the DataExplorer package
+plot_missing(initial_df, 
+             geom_label_args = list("size" = 3, "label.padding" = unit(0.1, "lines")),
+             ggtheme = theme_minimal())
+```
+
+Looking at the size of the dataset and the missing value plot, it is interesting to note that ∼ 25% of the entries are not assigned to a particular customer, if we can remove the missing values we can still have a good-sized set of data to work on. Moreover, with the data available, it is impossible to impute values for the customers and these entries are thus useless for our analysis, so let's start by removing the missing values:
+
+```{r prepare-data-1.2, echo=FALSE, warning=FALSE}
+initial_df = na.omit(initial_df)
+options(repr.plot.width=8, repr.plot.height=3)
+# look for missing values using the DataExplorer package
+plot_missing(initial_df, 
+             geom_label_args = list("size" = 3, "label.padding" = unit(0.1, "lines")),
+             ggtheme = theme_minimal())
+```
+
+The shape of the dataframe after removing NA values: `r dim(initial_df)`
+
+# Feature Engineering 
+
+Variables that pop out are <b>InvoiceDate</b>, <b>Quantity</b> and <b>Unit Price</b>. 
+
+- <b>InvoiceDate</b> is a character variable, but we can pull out the date and time information to create two new variables. We'll also create separate variables for month, year and hour of day.
+
+- <b>Quantity</b> and <b>Unit Price</b> will be used to create a column <b>BasketPrice</b>.
+
+```{r prepare-data-1.3, echo=FALSE, warning=FALSE, results='asis'}
+initial_df = separate(initial_df, col = c("InvoiceDate"),
+                      into = c("InvoiceDate", "InvoiceTime"), sep = " ")
+initial_df = separate(initial_df, col = c("InvoiceDate"),
+                      into = c("Month", "Day", "Year"), sep = "/",
+                      remove = FALSE)
+initial_df = initial_df %>% dplyr::select(-Day)
+initial_df = separate(initial_df, col = c("InvoiceTime"),
+                      into = c("HourOfDay", "Minutes"), sep = ":",
+                      remove = FALSE)
+initial_df = initial_df %>% dplyr::select(-Minutes)
+initial_df$InvoiceDate = as.Date(initial_df$InvoiceDate, "%m/%d/%Y")
+initial_df$DayOfWeek = wday(initial_df$InvoiceDate, label = TRUE)
+initial_df = initial_df %>% mutate(BasketPrice = Quantity * UnitPrice)
+# Finally, I check for duplicate entries and delete them:
+initial_df = dplyr::distinct(initial_df)
+initial_df$Country <- as.factor(initial_df$Country)
+initial_df$Month<- as.factor(initial_df$Month)
+initial_df$Year <- as.factor(initial_df$Year)
+levels(initial_df$Year) <- c(2010,2011)
+initial_df$HourOfDay<- as.factor(initial_df$HourOfDay)
+initial_df$DayOfWeek <- as.factor(initial_df$DayOfWeek)
+kable(initial_df[1:5, ], caption = "Dataset with new features added") %>%
+   kable_styling(font_size = 8)
+```
+
+We now have a good dataframe to explore and analyze the sales trends, market profitability, order cancellations and product categories. Before we move on to getting involved with extracting product categories and perform customer segmentation, we'll look at some of the bigger features of the dataset. 
+
+# Exploratory Data Analysis
+
+This dataframe contains 8 features + 6 engineered features = 14 features that correspond to:
+
+- <b>InvoiceNo:</b> Invoice number. *Nominal*, a 6-digit integral number uniquely assigned to each transaction. If this code starts with letter 'C', it indicates a cancellation.
+
+- <b>StockCode:</b> Product (item) code. *Nominal*, a 5-digit integral number uniquely assigned to each distinct product.
+
+- <b>Description:</b> Product (item) name. *Nominal*.
+
+- <b>Quantity:</b> The quantities of each product (item) per transaction. Numeric.
+
+- <b>InvoiceDate:</b> Invice Date and time. *Date*, the day and time when each transaction was generated.
+
+- <b>UnitPrice:</b> Unit price. *Numeric*, Product price per unit in sterling.
+
+- <b>CustomerID:</b> Customer number. *Nominal*, a 5-digit integral number uniquely assigned to each customer.
+
+- <b>Country:</b> Country name. *Nominal*, the name of the country where each customer resides.
+
+Summary of engineered features: <b>Month</b>, <b>Year</b>, <b>InvoiceTime</b>, <b>HourOfDay</b>, <b>DayOfWeek</b>, <b>BasketPrice</b>
+
+### Revenue By Date
+
+```{r explore-data-1, echo=FALSE, warning=FALSE}
+initial_df %>%
+  group_by(InvoiceDate) %>% summarise(Revenue = sum(BasketPrice)) %>%
+  ggplot(aes(x = InvoiceDate, y = Revenue)) + 
+  geom_line() +
+  geom_smooth(formula = y~x, method = "loess", se = TRUE) +
+  labs(x = "Date", y = "Revenue (£)", title = "Sales Revenue by Date")
+```
+
+It appears as though sales are trending up, so that's a good sign, but that doesn't really generate any actionable insight, so let's dive into the data a bit farther.
+
+### Day of Week Analysis
+
+Using the *lubridate* package, we assigned a day of the week to each date in our dataset. Generally, people tend to be in a different frame of mind as the week goes on. Are people more likely to spend as the week goes on? Browsing to pass a Sunday afternoon? Procrastinating on that Friday afternoon at work? Cheering yourself up after a difficult Monday? Also, since a lot of our customers are wholesale buyers, do they fill up their inventories on a regular basis? Is there a pattern in their purchasing history?
+
+Let's drill into the days of the week side of our data and see what we can uncover about our sales trends.
+
+```{r explore-data-1.1, echo=FALSE, warning=FALSE}
+initial_df %>%
+  group_by(DayOfWeek) %>% summarise(Revenue = sum(BasketPrice)) %>%
+  ggplot(aes(x = DayOfWeek, y = Revenue)) + 
+  geom_bar(stat = "identity", fill = 'steelblue') +
+  labs(x = "Day of Week", y = "Revenue (£)", title = "Sales Revenue by Day of Week")
+```
+
+It looks like there could be something interesting going on with the amount of revenue that is generated on each particular weekday. What about Saturday? Let's drill into this a little bit more by creating a new dataframe that we can use to look at what's going on at the day of the week level in a bit more detail:
+
+```{r explore-data-1.2, echo=FALSE, warning=FALSE, results='asis'}
+weekday_summary = initial_df %>%
+  group_by(InvoiceDate, DayOfWeek) %>%
+  summarise(Revenue = sum(BasketPrice), Transactions = n_distinct(InvoiceNo)) %>%
+  mutate(AverageOrderVal = round((Revenue/ Transactions), 2)) %>%
+  ungroup()
+kable(weekday_summary[1:5, ], caption = "Summary of  Weekday Transactions") %>%
+  kable_styling()
+```
+
+We now have a dataframe that summarises what is happening on each day, with our *DayOfWeek* present and a few of newly engineered variables, daily *Revenue*, *Transactions* and *AverageOrderVal*, we can drill into our data a bit more thoroughly.
+
+```{r explore-data-1.3, echo=FALSE, warning=FALSE}
+weekday_summary %>%
+  ggplot(aes(x = DayOfWeek, y = Revenue)) + 
+  geom_boxplot() + 
+  labs(x = "Day of Week", y = "Revenue (£)", title = "Sales Revenue by Day of Week")
+```
+
+```{r explore-data-1.4, echo=FALSE, warning=FALSE}
+weekday_summary %>%
+  ggplot(aes(x = DayOfWeek, y = Transactions)) + 
+  geom_boxplot() + 
+  labs(x = "Day of Week", y = "Transactions", title = "Number of Transactions by Day of Week")
+```
+
+```{r explore-data-1.5, echo=FALSE, warning=FALSE}
+weekday_summary %>%
+  ggplot(aes(x = DayOfWeek, y = AverageOrderVal)) + 
+  geom_boxplot() + 
+  labs(x = "Day of Week", y = "Average Order Value (£)", 
+       title = "Number of Transactions by Day of Week")
+```
+
+Eye-balling the plots, it looks as though there are differences in the amount of revenue on each day of the week, and that this difference is driven by a difference in the number of transactions, rather than the average order value. Apparently, there are no transactions on Saturdays. The retailer might not be accepting orders that day. 
+
+Let's plot the data as a density plot to get a better feel for how the data is distributed across the days.
+
+```{r explore-data-1.6, echo=FALSE, warning=FALSE}
+weekday_summary %>% 
+  ggplot(aes(Transactions, fill = DayOfWeek)) + 
+  geom_density(alpha = 0.2)
+```
+
+There appears to be a reasonable amount of skewness in our distributions, so we'll use a non-parametric test to look for statistically significant differences in our data.
+
+```{r explore-data-1.7, echo=FALSE, warning=FALSE}
+kruskal.test(weekday_summary$Transactions ~ weekday_summary$DayOfWeek, data = weekday_summary)
+```
+
+The null hypothesis of the Kruskal–Wallis test is that the mean ranks of the groups are the same, the alternative is that they differ in at least one.
+
+The p-value obtained from performing the test is significantly small, hence we reject the null hypothesis and conclude that the mean ranks of the groups are significantly different.
+
+```{r explore-data-1.8, echo=FALSE, warning=FALSE}
+kruskal(weekday_summary$Transactions, weekday_summary$DayOfWeek, console = FALSE)
+```
+
+#### Conclusions from Day of Week Analysis
+
+Analyzing the data at the weekday level, we can observe that there are statistically significant differences in the number of transactions that take place on different days of the week, with Sunday having the lowest number of transactions, and Thursday the highest. As the average order value remains relatively constant, the number of transactions explain the difference in revenue.
+
+Given the low number of transactions on a Sunday and a high number on a Thursday, we could make recommendations around our digital advertising spend. Should we spend less on a Sunday and more on a Thursday, given that we know we already have more transactions, which could suggest people are more ready to buy on Thursdays? Possible, but without knowing other key metrics, it might be a bit hasty to say.
+
+While this data does reveal insight, in order to be truly actionable, we would want to combine this with more information. In particular, combining these data with web analytics data would be hugely valuable. How do these data correlate with web traffic figures? Does the conversion rate change or is there just more traffic on a Thursday and less on a Sunday?
+
+What about out current advertising spend? Is the company already spending less on a Sunday and more on a Thursday and that is behind our observed differences? What about buying cycles? How long does it take for a customer to go from thinking about buying something to buying it? If it's usually a couple of days, should we advertise more on a Tuesday? Should we continue with an increased spend on a Thursday, when they're ready to buy, and let our competitors pay for the clicks while the customer is in the 'research' stage of the process?
+
+These types of questions illustrate the importance of understanding the vertical, the business model and other factors and decisions which underpin the dataset, rather than just looking at the dataset in isolation.
+# Customer Segmentation
+
+Let's use the customer’s spending behavior, their products of interest and some basic information about their activity to perform segmentation.
+
+**Useful info for our analysis are**:
+
+- Average basket value
+- Basket value range (min, max)
+- Order frequency
+- Tendency to cancel an order
+- User’s activity (first and last purchase time)
+- Products of interest
+
+Let’s group each customer and determine the **number of transactions** made by each of them, **minimum, maximum, average amount** spent on all transactions, **total amount** spent, days since **first purchase**, days since **last purchase** and finally how much each **customer spends in each category**. We now have our final dataset.
+
+```{r customer-segmentation-1, echo=FALSE, warning=FALSE, message=FALSE, results='asis'}
+last_date = max(initial_df$InvoiceDate)
+customer_order_summary = initial_df %>% 
+  group_by(CustomerID) %>% 
+  summarise(n_baskets = n_distinct(InvoiceNo),
+            min_basket = min(BasketPrice),
+            avg_basket = mean(BasketPrice),
+            max_basket = max(BasketPrice),
+            total_basket = sum(BasketPrice),
+            first_purchase = min(InvoiceDate),
+            last_purchase = max(InvoiceDate)) %>%
+  mutate(first_purchase = as.integer(last_date - first_purchase),
+         last_purchase = as.integer(last_date - last_purchase))
+temp_df = initial_df %>% left_join(product_categories)
+customer_product_cat = temp_df %>% 
+  spread(ProductCategory, BasketPrice, fill = 0, convert = TRUE) %>%
+  dplyr::select(-InvoiceNo, -StockCode, -Description, -Quantity, -InvoiceDate,
+                -Month, -Year, -InvoiceTime, -HourOfDay, -UnitPrice, -Country,
+                -DayOfWeek, -ProductURL) %>%
+  group_by(CustomerID) %>% summarise_all(.funs = sum)
+customer_order_summary = customer_order_summary %>% left_join(customer_product_cat)
+customer_order_summary$CustomerID = as.integer(customer_order_summary$CustomerID)
+kable(customer_order_summary[1:5, c(1:8, 16:17,21, 38)], 
+      caption = "Summary of customer purchase history") %>% kable_styling(font_size = 8)
+```
+Since we have 32 product categories, not all categories have been shown in the representation above.
+
+### Statistical Clustering - K-means algorithm
+
+The segmentation will be performed using K-means clustering, which is a simple and elegant way of subsetting the customers into non-overlapping segments. There are advantages and disadvantages of this type of clustering.
+
+**Advantages:**
+
+- Relatively simple to implement.
+
+- Scales to large data sets.
+
+- Guarantees convergence.
+
+- Can warm-start the positions of centroids.
+
+- Easily adapts to new examples.
+
+- Generalizes to clusters of different shapes and sizes, such as elliptical clusters.
+
+**Disadvantages:**
+
+- Choosing 'k' manually: Use the “Loss vs. Clusters” plot to find the optimal (k)
+
+- Being dependent on initial values: For a low , you can mitigate this dependence by running k-means several times with different initial values and picking the best result.
+
+- Clustering data of varying sizes and density: K-means has trouble clustering data where clusters are of varying sizes and density. To cluster such data, you need to generalize k-means as described in the Advantages section.
+
+
+<b>Importance of scaling the data before performing K-means: </b>
+
+In our dataframe for customer segmentation described above, variables are measured in different units, where a unit increase or decrease in one day for **first_purchase** and **last_purchase** is completely different than a unit increase or decrease in pounds for **total_basket**. Therefore the importance of scaling the data, to represent the true distance among variables. The data has been scaled using the function scale().
+
+<b>Choosing the oprimal number of clusters: </b>
+
+As we learned before, the k-means algorithm doesn’t choose the optimal number of clusters upfront, but there are different techniques to make the selection. The most popular ones are within cluster sums of squares, average silhouette and gap statistics.  The silhouette statistic for a single element compares its mean inner-cluster distance to the mean distance from the neighbouring cluster. It varies from -1 to 1, where high positive values mean the element is correctly assigned to the current cluster, while negative values signify it’s better to assign it to neighbouring one. Here we present average silhouette across all data points:
+
+```{r customer-segmentation-1.1, echo=FALSE, warning=FALSE}
+# 1. Loading and preparing data
+scaled_cutomer_order_summary = as.data.frame(scale(customer_order_summary))
+# 2. Find optimal number of clusters for k-means
+fviz_nbclust(scaled_cutomer_order_summary, kmeans, method='silhouette')
+```
+
+As you can see above, the optimal number of clusters is 3 hands-down. So let’s choose 3.
+
+```{r customer-segmentation-1.2, echo=FALSE, warning=FALSE}
+set.seed(123)
+# 3. Compute k-means
+km_model = kmeans(scaled_cutomer_order_summary, 3, nstart = 25)
+customer_order_summary$Cluster = km_model$cluster
+```
+
+**Let's verify if the clusters were extracted correctly?**
+
+Our dataset stores 40 variables, so it’s impossible to compare assigned clusters across all variables (readable visualisations are restricted to a maximum 3 dimensions).
+
+One of the most popular approaches that helps solve the problem is **Principal Component Analysis (PCA)**. PCA combines variables of a provided dataset to create new ones, called PCA components, that capture most of the dataset variation. Plotting clusters distribution across first PCA components should allow us to see if the clusters are separated or not. 
+
+```{r customer-segmentation-1.3, echo=FALSE, warning=FALSE}
+pca <- PCA(scaled_cutomer_order_summary,  graph = FALSE)
+fviz_screeplot(pca, addlabels = TRUE, ylim = c(0, 50))
+```
+
+For this case, let’s plot how the clusters were distributed comparing the 1st vs. the 2nd, as well as the 1st vs. the 3rd PCA components.
+
+```{r customer-segmentation-1.4, echo=FALSE, warning=FALSE}
+fviz_cluster(km_model, data = scaled_cutomer_order_summary,
+             axes = c(1,2),
+             geom = "point",
+             palette = c("#00AFBB", "#E7B800", "#FC4E07"),
+             ggtheme = theme_minimal(),
+             main = "Partitioning Clustering Plot Dim1 vs. Dim2")
+fviz_cluster(km_model, data = scaled_cutomer_order_summary,
+             axes = c(1,3),
+             geom = "point",
+             palette = c("#00AFBB", "#E7B800", "#FC4E07"),
+             ggtheme = theme_minimal(),
+             main = "Partitioning Clustering Plot Dim1 vs. Dim3")
+```
+
+From the plots above we can certainly conclude that all the three clusters are well seperated, there is no overlap whatsoever. To sum up, we’re happy with this result and we can now move to the next part of our analysis.
+
+<b> How can we detect which indicators along 40 variables distinguish our customers? </b>
+
+### RFM Analysis: (Recency, Frequency, Monetary)
+
+Recency, frequency, monetary value is a marketing analysis tool used to identify a company's or an organization's best customers by using certain measures. The RFM model is based on three quantitative factors:
+
+- Recency: How recently a customer has made a purchase
+- Frequency: How often a customer makes a purchase
+- Monetary Value: How much money a customer spends on purchases
+
+Below is a summary table that explains the differences in the three clusters.
+
+```{r customer-segmentation-1.5, echo=FALSE, warning=FALSE, results='asis'}
+cluster_diff = customer_order_summary %>% group_by(Cluster) %>%
+  summarise('Number of Customers' = n(),
+            'Recency Mean' = round(mean(last_purchase)),
+            'Frequency Mean' = scales::comma(round(mean(n_baskets))),
+            'Monetary Value Mean' = scales::comma(round(mean(total_basket))),
+            'Cluster Revenue' = scales::comma(sum(total_basket)))
+kable(cluster_diff, caption = "Diffreence between the three clusters") %>% kable_styling()
+```
+
+In general, it’s necessary to analyse distributions for each variable grouped by the assigned cluster. Boxplots could be used to analyze the distributions of the relevant variables. Below we present box plots to analyze Recency, Frequency and Monetary in each of the three cluster.
+
+```{r customer-segmentation-1.6, echo=FALSE, warning=FALSE, fig.height = 8, fig.width = 8}
+customer_order_summary$Cluster = as.factor(customer_order_summary$Cluster)
+r = customer_order_summary %>%
+  ggplot(aes(x = Cluster, y = last_purchase, fill = Cluster)) +
+  geom_boxplot(fill = c("steelblue1", "gold3", "orangered3")) +
+  labs(x = "Cluster", y = "Number of Days",
+       title = "Recency: Distribution of Days since Last Order") +
+  scale_fill_brewer(palette="RdBu") + theme_minimal()
+f = customer_order_summary %>%
+  ggplot(aes(x = Cluster, y = n_baskets, fill = Cluster)) +
+  geom_boxplot(fill = c("steelblue1", "gold3", "orangered3")) +
+  labs(x = "Cluster", y = "Number of Transactions",
+       title = "Frequency: Distribution of Transactions") +
+  scale_fill_brewer(palette="RdBu") + theme_minimal()
+m = customer_order_summary %>%
+  ggplot(aes(x = Cluster, y = total_basket, fill = Cluster)) +
+  geom_boxplot(fill = c("steelblue1", "gold3", "orangered3")) +
+  labs(x = "Cluster", y = "Order Value (£)",
+       title = "Monetary: Distribution of Order Value") +
+  scale_fill_brewer(palette="RdBu") + theme_minimal()
+grid.arrange(r, f, m, nrow = 3)
+```
+
+From the above summary we can detect a few simple characteristics about customers in each cluster.
+
+<b> Cluster 1 (Blue):</b>
+
+- Tends to spend a lot of money for each basket, £241,083 on average.
+- They order in bulk.
+- Products of interest for the group are varied.
+- The clients on average are also the most active in the recent past.
+- We can classify the group as high value customers (Wholesalers).
+
+
+<b> Cluster 2 (Golden): </b>
+
+- Tends to spend moderate amount of money on each basket, £57,323 on average.
+- They order the highest number of baskets on average.
+- Spend moderately across each product category.
+- The clients order weekly on average.
+- We can classify the group as regular customers.
+
+
+<b> Cluster 3 (Red): </b>
+
+- Tends to spend a low amount of money for each basket, £1,448 on average.
+- The number of transactions are extremenly low, 5 baskets on average.
+- The clients on average are least active in the recent past, take months before their next purchase.
+- We can classify the group as typical bargain hunters (Non-Wholesalers).
+
+
+### Products of Interest within each Cluster
+
+Next, let's analyze the tendency of each of the three clusters for buying a product in a specific category. 
+
+Categories **Home** and **Part & Ocassions** have been left out as they generate maximum revenue for each of the three clusters. We'll focus on a few other catgories that boost sales within and across the three clusters. 
+
+```{r customer-segmentation-1.7, echo=FALSE, warning=FALSE}
+product_stats_cluster =  customer_order_summary %>%
+  dplyr::select(-CustomerID, -n_baskets, -min_basket, -avg_basket, 
+                -max_basket, -total_basket, -first_purchase, -last_purchase)
+product_stats_cluster = 
+  product_stats_cluster %>% gather(key = "ProductCategory", value = "BasketValue", -Cluster) 
+product_stats_cluster %>% 
+  filter(ProductCategory %in% c("Arts Crafts & Sewing", "Jewelry", 
+                                "Clothing", "Office Supplies",
+                                "Toys", "Pets", "Food",
+                                "Patio & Garden")) %>%
+  ggplot(aes(x = ProductCategory, BasketValue)) +
+  stat_summary(fun.y=sum,geom="bar",fill="#CC6666",colour="black") +
+  labs(x = "Product Category", y = "Sales Revenue (£)",
+       title = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_wrap(~Cluster, scales = "free") 
+```
+
+From the bar plots above we can summarize the tendency for buying in a specfic category. 
+
+<b> Cluster 1: </b>
+
+- Customers spend a lot on Office Supplies, followed by Patio & Garden and Clothing.
+- They spend less on Jewelry and Food products,
+- Spend the most on products for Pets across the three clusters.
+
+<b> Cluster 2: </b>
+
+- Spend most on Toys, followed by Clothing and Arts Crafts & Sewing.
+- Least sales revenue from products for Pets.
+
+<b> Cluster 3: </b>
+
+- Spend most on Clothing, followed by Toys and Office Supplies.
+- Least sales revenue from products for Pets.
+
+# Further Segmentation - Hiererchical Clustering
+
+To enhance this clustering analysis it was decided to further segment the largest cluster of customer in the first segementation (Cluster 3), this further sub-segmentation was performed using hierechical clustering to further understand the customer characteristics of this group.
+
+Monetary Value was selected as the value for the further segmentation, using frequency and recency as estimators for it.
+
+```{r customer-segmentation-1.8, echo=FALSE, warning=FALSE}
+tree_cluster3 = customer_order_summary %>%
+  filter(Cluster == '3') %>%
+  dplyr::select(n_baskets, total_basket, last_purchase)
+fit_tree  = rpart(total_basket ~ ., 
+                 data = tree_cluster3,
+                 method = 'anova', 
+                 control = rpart.control(cp=0.0127102))
+rpart.plot(fit_tree, type=1,extra=1, box.palette=c("gray","lightblue"))
+```
+
+This sub-segmentation of Cluster 3, divided the cluster into 7 smaller different clusters.
+
+<b> Results: (From low value to high value customers) </b>
+
+- 2,130 customers that purchase less than 3 times, average monetary value of £412.
+
+- 1,156 customers that purchase greater than 3 times but lesser than 6 times, average monetary value of £1,166 (significantly higher than the previous group).
+
+- 550 customers that purchase greater than 6 times but lesser than 10 times, average monetary value of £2,159.
+
+- 323 customers that purchase greater than 10 times but lesser than 17 times, average monetary value of £3,738.
+
+- 167 customers that purchase greater than 17 times and lesser than 41 times, average monetary value of £7,532.
+
+- 12 customers that purchase greater than 41 times and lesser than 52 times, average monetary value of £15,000.
+
+- 10 customers that purchase greater than 52 times, average monetary value of £24,000.
+
+This last sub-segment of 10 customers represents the most valuable customers within Cluster 3. From these insights, executive and management team can take further strategic actions to increase the averague monetary value of lower sub-segments within this cluster of customers.
